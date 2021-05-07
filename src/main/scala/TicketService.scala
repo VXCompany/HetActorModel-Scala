@@ -3,14 +3,13 @@ import java.util.concurrent.TimeUnit
 import akka.actor.{Actor, ActorRef, ActorSystem, Props}
 import akka.util.Timeout
 
-import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.FiniteDuration
-import scala.util.{Failure, Success}
 
 class TicketService extends Actor {
   import TicketService._
   override def receive: Receive = preSale
 
+  //Database
   var boughtTickets: List[String] = List()
 
   def preSale: Receive = {
@@ -22,28 +21,34 @@ class TicketService extends Actor {
 
   def sale(totalAmountOfTickets: Int): Receive = {
     case StartSelling => println(s"Sale is started with amount of tickets: $totalAmountOfTickets")
-    case Buy(numberOfTickets) =>
+    case Buy(actorRef, numberOfTickets) =>
+      println(s"seller do you have $numberOfTickets tickets for sell?")
       val newTotal = totalAmountOfTickets - numberOfTickets
       if (newTotal >= 0) {
-        val actorRef = sender()
-        println(s"successfully purchased ticket, dont forget negative covid test $actorRef")
+        println(s"successfully purchased ticket, $totalAmountOfTickets, dont forget negative covid test $actorRef")
         boughtTickets = boughtTickets :+ actorRef.toString
+        actorRef ! Bought(numberOfTickets)
         context.become(sale(newTotal))
       } else {
+        actorRef ! SoldOut(numberOfTickets)
         context.become(postSale("sold out"))
       }
+    case PositiveCovidTest(actorRef, numberOfTickets) => ticketReturn(actorRef, numberOfTickets)
   }
 
   def postSale(reason: String): Receive = {
-    case TicketReturn(numberOfTickets) =>
-      val actorRef = sender().toString()
-      if (boughtTickets.contains(actorRef)) {
-        boughtTickets = boughtTickets.filterNot(_.equals(actorRef))
-        context.become(sale(numberOfTickets))
-      } else {
-        println("you dont have any tickets")
-      }
+    case PositiveCovidTest(actorRef, numberOfTickets) => ticketReturn(actorRef, numberOfTickets)
     case _ => println(s"sale already ended $reason")
+  }
+
+  def ticketReturn(actorRef: ActorRef, numberOfTickets: Int) = {
+    if (boughtTickets.contains(actorRef.toString())) {
+      boughtTickets = boughtTickets.filterNot(_.equals(actorRef.toString()))
+      println(s"returned amount: $numberOfTickets of tickets")
+      context.become(sale(numberOfTickets))
+    } else {
+      println("you dont have any tickets")
+    }
   }
 }
 
@@ -53,47 +58,42 @@ class TicketBuyer extends Actor {
   override def receive: Receive = handleTickets
 
   def handleTickets: Receive = {
-    case Buy(numberOfTickets) => sendCommandToActorRefTicketSystem(Buy(numberOfTickets))
-    case PositiveCovidTest(numberOfTickets) =>
-      sendCommandToActorRefTicketSystem(TicketReturn(numberOfTickets))
-  }
-
-  def sendCommandToActorRefTicketSystem(ticketBuyerCommand: TicketBuyerCommand): Unit = {
-    system.actorSelection("user/ticketservice").resolveOne().onComplete {
-      case Success(actorRef: ActorRef) => actorRef ! ticketBuyerCommand
-      case Failure(exception) =>
-        println("ticket system not found")
-        throw exception
-    }
+    case Bought(numberOfTickets) => println(s"${self.path} succesfully bought $numberOfTickets")
+    case SoldOut(numberOfTickets) => println(s"${self.path} tickets already sold out")
+    case Returned(numberOfTickets) => println(s"${self.path} succesfully returned $numberOfTickets")
   }
 }
-
 
 object TicketService extends App {
   val system = ActorSystem("TicketService")
   sealed trait TicketSellerCommand
   case class Init(totalAmountOfTickets: Int) extends TicketSellerCommand
+  case class Buy(actorRef: ActorRef, numberOfTickets: Int) extends TicketSellerCommand
+  case class PositiveCovidTest(actorRef: ActorRef, numberOfTickets: Int) extends TicketSellerCommand
   case object StartSelling
 
 
   sealed trait TicketBuyerCommand
-  case class Buy(numberOfTickets: Int) extends TicketBuyerCommand
-  case class PositiveCovidTest(numberOfTickets: Int) extends TicketBuyerCommand
-  case class TicketReturn(numberOfTickets: Int) extends TicketBuyerCommand
-
+  case class Bought(numberOfTickets: Int) extends TicketBuyerCommand
+  case class SoldOut(numberOfTickets: Int) extends TicketBuyerCommand
+  case class Returned(numberOfTickets: Int) extends TicketBuyerCommand
 
   val actorRefTicketService = system.actorOf(Props(new TicketService), "ticketservice")
 
   actorRefTicketService ! Init(2)
 
   val actorRefTicketBuyer1 = system.actorOf(Props(new TicketBuyer), "ticketBuyer1")
-  actorRefTicketBuyer1 ! Buy(2)
-
   val actorRefTicketBuyer2 = system.actorOf(Props(new TicketBuyer), "ticketBuyer2")
-  actorRefTicketBuyer2 ! Buy(2)
-  actorRefTicketBuyer1 ! PositiveCovidTest(2)
+  val actorRefTicketBuyer3 = system.actorOf(Props(new TicketBuyer), "ticketBuyer3")
 
 
-  actorRefTicketBuyer2 ! Buy(2)
+
+
+  actorRefTicketService ! Buy(actorRefTicketBuyer1, 2)
+  actorRefTicketService ! Buy(actorRefTicketBuyer2, 2)
+  actorRefTicketService ! Buy(actorRefTicketBuyer3, 2)
+  actorRefTicketService ! PositiveCovidTest(actorRefTicketBuyer1, 2)
+  actorRefTicketService ! Buy(actorRefTicketBuyer2, 2)
+
 
 }
